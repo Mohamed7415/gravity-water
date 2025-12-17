@@ -1,0 +1,4 @@
+[build]
+  base = "gravity-water"
+  publish = "."
+  command = ""
