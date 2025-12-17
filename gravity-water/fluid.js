@@ -1,16 +1,16 @@
-// fluid.js - Realistic AR Water Simulation
+// fluid.js - Realistic AR Water (Debug Mode & Fixes)
 
 const CONFIG = {
-    particleCount: 1500, 
-    radius: 12,          
-    physRadius: 10,      
+    particleCount: 1500,
+    radius: 12,
+    physRadius: 10,
     gravityScale: 0.15,
-    damping: 0.985,      // Very low friction
-    stiffness: 0.04,     // Softer water
-    stiffnessNear: 0.1,  
-    restDensity: 4.0,    
+    damping: 0.985,
+    stiffness: 0.04,
+    stiffnessNear: 0.1,
+    restDensity: 4.0,
     interactionRadius: 80,
-    subSteps: 3          
+    subSteps: 3
 };
 
 let gl;
@@ -35,73 +35,120 @@ let gravity = { x: 0, y: 1 };
 let pointer = { x: -1000, y: -1000, down: false };
 let isRunning = false;
 
-// Camera State
+// Camera
 let videoElement;
 let isCameraActive = false;
 let cameraReady = false;
 
+// --- Debug Helper ---
+function showError(msg) {
+    alert("Error: " + msg);
+    console.error(msg);
+}
+
 // --- 1. System Initialization ---
 
 function initWebGL() {
-    const canvas = document.getElementById('glcanvas');
-    gl = canvas.getContext('webgl', { alpha: false, depth: false, antialias: false });
-    if (!gl) return false;
+    try {
+        const canvas = document.getElementById('glcanvas');
+        // Try getting context with fallback
+        gl = canvas.getContext('webgl', { alpha: false, depth: false }) || 
+             canvas.getContext('experimental-webgl');
 
-    gl.getExtension('OES_texture_float');
+        if (!gl) {
+            showError("WebGL not supported on this device.");
+            return false;
+        }
 
-    resize();
-    window.addEventListener('resize', resize);
+        // Extensions
+        const ext = gl.getExtension('OES_texture_float');
+        if (!ext) console.warn("Float textures not supported, water might look glitchy.");
 
-    // Programs
-    programs.water = createProgram(gl, 'vs-quad', 'fs-water');
-    programs.particles = createProgram(gl, 'vs-particles', 'fs-particles');
+        resize();
+        window.addEventListener('resize', resize);
 
-    // Buffers
-    buffers.quad = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.quad);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+        // Compile Programs
+        programs.water = createProgram(gl, 'vs-quad', 'fs-water');
+        programs.particles = createProgram(gl, 'vs-particles', 'fs-particles');
 
-    buffers.particles = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.particles);
-    gl.bufferData(gl.ARRAY_BUFFER, CONFIG.particleCount * 8, gl.DYNAMIC_DRAW);
+        if (!programs.water || !programs.particles) return false;
 
-    // Textures
-    textures.bg = createDefaultTexture(gl); // Start with black/gradient
-    textures.camera = gl.createTexture(); // Placeholder for video
-    
-    // Init Camera Texture params
-    gl.bindTexture(gl.TEXTURE_2D, textures.camera);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // Buffers
+        buffers.quad = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.quad);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
 
-    return true;
+        buffers.particles = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.particles);
+        // Size: Count * 2 floats * 4 bytes
+        gl.bufferData(gl.ARRAY_BUFFER, CONFIG.particleCount * 8, gl.DYNAMIC_DRAW);
+
+        // Textures
+        textures.bg = createDefaultTexture(gl);
+        textures.camera = gl.createTexture();
+        
+        gl.bindTexture(gl.TEXTURE_2D, textures.camera);
+        // Use NEAREST/LINEAR based on needs
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // Upload a single black pixel to avoid warning if rendered before video
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+
+        return true;
+    } catch (e) {
+        showError("Init Failed: " + e.message);
+        return false;
+    }
 }
 
 function createProgram(gl, vsId, fsId) {
-    const vs = gl.createShader(gl.VERTEX_SHADER);
-    gl.shaderSource(vs, document.getElementById(vsId).textContent);
-    gl.compileShader(vs);
-    
-    const fs = gl.createShader(gl.FRAGMENT_SHADER);
-    gl.shaderSource(fs, document.getElementById(fsId).textContent);
-    gl.compileShader(fs);
+    try {
+        const vsEl = document.getElementById(vsId);
+        const fsEl = document.getElementById(fsId);
+        
+        if (!vsEl || !fsEl) throw new Error(`Shader script missing: ${vsId} or ${fsId}`);
 
-    const prog = gl.createProgram();
-    gl.attachShader(prog, vs);
-    gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    return prog;
+        const vs = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vs, vsEl.textContent);
+        gl.compileShader(vs);
+        if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+            throw new Error("VS Compile: " + gl.getShaderInfoLog(vs));
+        }
+        
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, fsEl.textContent);
+        gl.compileShader(fs);
+        if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+            throw new Error("FS Compile: " + gl.getShaderInfoLog(fs));
+        }
+
+        const prog = gl.createProgram();
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+            throw new Error("Link: " + gl.getProgramInfoLog(prog));
+        }
+        return prog;
+    } catch (e) {
+        showError(e.message);
+        return null;
+    }
 }
 
 function resize() {
+    if (!gl) return;
     const canvas = document.getElementById('glcanvas');
     width = canvas.width = window.innerWidth;
     height = canvas.height = window.innerHeight;
     gl.viewport(0, 0, width, height);
-    // Downscale water mask for performance and softness
-    framebuffers.water = createFramebuffer(width * 0.5, height * 0.5);
+    
+    // Water Mask FBO
+    // 0.5 scale for performance and better "blob" look
+    framebuffers.water = createFramebuffer(Math.floor(width * 0.5), Math.floor(height * 0.5));
 }
 
 function createFramebuffer(w, h) {
@@ -122,47 +169,47 @@ function createDefaultTexture(gl) {
     const canvas = document.createElement('canvas');
     canvas.width = 512; canvas.height = 512;
     const ctx = canvas.getContext('2d');
-    // Dark sleek gradient
+    
+    // Gradient Background
     const grd = ctx.createLinearGradient(0,0,0,512);
-    grd.addColorStop(0, '#111');
-    grd.addColorStop(1, '#222');
+    grd.addColorStop(0, '#1a1a1a');
+    grd.addColorStop(1, '#000000');
     ctx.fillStyle = grd;
     ctx.fillRect(0,0,512,512);
     
-    // Add some noise/pattern so water is visible even without camera
-    ctx.fillStyle = '#333';
-    for(let i=0; i<50; i++) {
-        ctx.beginPath();
-        ctx.arc(Math.random()*512, Math.random()*512, Math.random()*50, 0, Math.PI*2);
-        ctx.fill();
+    // Grid Lines for Refraction Reference
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 2;
+    for(let i=0; i<512; i+=40) {
+        ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
     }
-
+    
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.generateMipmap(gl.TEXTURE_2D);
     return tex;
 }
 
-// --- 2. Camera Logic ---
-
+// --- 2. Camera ---
 async function toggleCamera() {
     const btn = document.getElementById('btn-cam');
     
     if (isCameraActive) {
-        // Turn Off
-        videoElement.srcObject.getTracks().forEach(t => t.stop());
+        if (videoElement.srcObject) {
+            videoElement.srcObject.getTracks().forEach(t => t.stop());
+        }
         videoElement.srcObject = null;
         isCameraActive = false;
         cameraReady = false;
         btn.innerText = "Camera: OFF";
         btn.classList.remove('active');
     } else {
-        // Turn On
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment' } // Rear camera preferred
+                video: { facingMode: 'environment' } 
             });
             videoElement.srcObject = stream;
             videoElement.play();
@@ -170,25 +217,21 @@ async function toggleCamera() {
             btn.innerText = "Camera: ON";
             btn.classList.add('active');
             
-            videoElement.onplaying = () => {
-                cameraReady = true;
-            };
+            videoElement.onplaying = () => { cameraReady = true; };
         } catch (e) {
-            alert("Camera access failed or denied.");
-            console.error(e);
+            alert("Camera Error: " + e.message);
         }
     }
 }
 
-// --- 3. Physics (PBF) ---
-
+// --- 3. Physics ---
 function initParticles() {
     const cols = Math.floor(Math.sqrt(CONFIG.particleCount));
     const spacing = CONFIG.physRadius * 2.2;
     const startX = (width - cols * spacing) / 2;
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.x[i] = startX + (i%cols)*spacing;
-        particles.y[i] = height*0.2 + Math.floor(i/cols)*spacing;
+        particles.y[i] = height*0.3 + Math.floor(i/cols)*spacing;
         particles.prevX[i] = particles.x[i];
         particles.prevY[i] = particles.y[i];
         particles.vx[i] = (Math.random()-0.5)*5;
@@ -197,18 +240,19 @@ function initParticles() {
 }
 
 function updatePhysics() {
-    // 1. Gravity
+    // Gravity
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.vx[i] += gravity.x * CONFIG.gravityScale;
         particles.vy[i] += gravity.y * CONFIG.gravityScale;
         
+        // Touch Repel
         if(pointer.down) {
             let dx = particles.x[i]-pointer.x;
             let dy = particles.y[i]-pointer.y;
             let d2 = dx*dx+dy*dy;
             if(d2 < CONFIG.interactionRadius**2){
                 let d = Math.sqrt(d2);
-                let f = (1 - d/CONFIG.interactionRadius)*3;
+                let f = (1 - d/CONFIG.interactionRadius)*4.0;
                 particles.vx[i] += (dx/d)*f;
                 particles.vy[i] += (dy/d)*f;
             }
@@ -220,14 +264,12 @@ function updatePhysics() {
         particles.y[i] += particles.vy[i];
     }
 
-    // 2. Constraints
+    // Solve Constraints (PBF)
     for(let s=0; s<CONFIG.subSteps; s++){
-        // Build Grid
         grid = {};
         for(let i=0; i<CONFIG.particleCount; i++){
-            let key = Math.floor(particles.x[i]/GRID_SIZE) + "," + Math.floor(particles.y[i]/GRID_SIZE);
-            if(!grid[key]) grid[key]=[]; 
-            grid[key].push(i);
+            let k = Math.floor(particles.x[i]/GRID_SIZE) + "," + Math.floor(particles.y[i]/GRID_SIZE);
+            if(!grid[k]) grid[k]=[]; grid[k].push(i);
         }
 
         for(let i=0; i<CONFIG.particleCount; i++){
@@ -273,7 +315,7 @@ function updatePhysics() {
             particles.x[i]+=dx; particles.y[i]+=dy;
         }
 
-        const m=CONFIG.radius;
+        const m = CONFIG.radius;
         for(let i=0; i<CONFIG.particleCount; i++){
             if(particles.x[i]<m) particles.x[i]=m;
             if(particles.x[i]>width-m) particles.x[i]=width-m;
@@ -282,21 +324,17 @@ function updatePhysics() {
         }
     }
 
-    // 3. Update V
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.vx[i] = (particles.x[i]-particles.prevX[i])*CONFIG.damping;
         particles.vy[i] = (particles.y[i]-particles.prevY[i])*CONFIG.damping;
     }
 }
 
-// --- 4. Render Loop ---
-
+// --- 4. Render ---
 function render() {
     if(!isRunning) return;
-
     updatePhysics();
 
-    // 1. Render Particles (Water Mask)
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffers.water.fb);
     gl.viewport(0, 0, framebuffers.water.width, framebuffers.water.height);
     gl.clearColor(0,0,0,0);
@@ -308,7 +346,6 @@ function render() {
         pos[i*2] = particles.x[i];
         pos[i*2+1] = particles.y[i];
     }
-    
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.particles);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, pos);
     
@@ -319,27 +356,25 @@ function render() {
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.drawArrays(gl.POINTS, 0, CONFIG.particleCount);
 
-    // 2. Render Final Composition
+    // Final Pass
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
     gl.useProgram(programs.water);
 
-    // Bind Water Mask
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, framebuffers.water.tex);
     gl.uniform1i(gl.getUniformLocation(programs.water, 'u_particles'), 0);
 
-    // Bind Background (Camera or Default)
     gl.activeTexture(gl.TEXTURE1);
     if (isCameraActive && cameraReady) {
         gl.bindTexture(gl.TEXTURE_2D, textures.camera);
-        // Upload video frame to texture
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoElement);
+        try {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoElement);
+        } catch(e) { /* ignore texture upload errors if frame not ready */ }
     } else {
         gl.bindTexture(gl.TEXTURE_2D, textures.bg);
     }
     gl.uniform1i(gl.getUniformLocation(programs.water, 'u_bg'), 1);
-
     gl.uniform2f(gl.getUniformLocation(programs.water, 'u_resolution'), width, height);
     
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.quad);
@@ -353,40 +388,55 @@ function render() {
 }
 
 // --- 5. Boot ---
+window.addEventListener('load', () => {
+    videoElement = document.getElementById('cam-video');
+    const startBtn = document.getElementById('start-btn');
+    const camBtn = document.getElementById('btn-cam');
+    const resetBtn = document.getElementById('btn-reset');
 
-videoElement = document.getElementById('cam-video');
-
-document.getElementById('start-btn').addEventListener('click', () => {
-    document.getElementById('ui-layer').classList.add('hidden');
-    document.getElementById('controls').classList.remove('hidden');
-    
-    if(initWebGL()) {
-        initParticles();
-        isRunning = true;
-        render();
-
-        // Motion Sensors
-        if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){
-            DeviceMotionEvent.requestPermission().then(r=>{if(r==='granted') window.addEventListener('devicemotion', handleMotion)});
-        } else {
-            window.addEventListener('devicemotion', handleMotion);
-        }
+    if (startBtn) {
+        startBtn.addEventListener('click', () => {
+            try {
+                document.getElementById('ui-layer').classList.add('hidden');
+                document.getElementById('controls').classList.remove('hidden');
+                
+                if(initWebGL()) {
+                    initParticles();
+                    isRunning = true;
+                    render();
+                    
+                    if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){
+                        DeviceMotionEvent.requestPermission()
+                            .then(r => { 
+                                if(r==='granted') window.addEventListener('devicemotion', handleMotion);
+                                else showError("Sensor permission denied");
+                            })
+                            .catch(e => showError("Sensor Error: " + e.message));
+                    } else {
+                        window.addEventListener('devicemotion', handleMotion);
+                    }
+                }
+            } catch (e) {
+                showError("Start Error: " + e.message);
+            }
+        });
     }
-});
 
-document.getElementById('btn-cam').addEventListener('click', toggleCamera);
-document.getElementById('btn-reset').addEventListener('click', initParticles);
+    if(camBtn) camBtn.addEventListener('click', toggleCamera);
+    if(resetBtn) resetBtn.addEventListener('click', initParticles);
+    
+    // Interaction
+    window.addEventListener('touchmove', e=>{e.preventDefault(); pointer.x=e.touches[0].clientX; pointer.y=e.touches[0].clientY; pointer.down=true;}, {passive:false});
+    window.addEventListener('touchend', ()=>pointer.down=false);
+    window.addEventListener('mousemove', e=>{pointer.x=e.clientX; pointer.y=e.clientY; pointer.down=true;});
+    window.addEventListener('mouseup', ()=>pointer.down=false);
+});
 
 function handleMotion(e) {
     let acc = e.accelerationIncludingGravity;
     if (acc) {
+        // Sensitivity
         gravity.x = -(acc.x||0) * 0.5;
         gravity.y = (acc.y||0) * 0.5;
     }
 }
-
-// Interaction
-window.addEventListener('touchmove', e=>{e.preventDefault(); pointer.x=e.touches[0].clientX; pointer.y=e.touches[0].clientY; pointer.down=true;}, {passive:false});
-window.addEventListener('touchend', ()=>pointer.down=false);
-window.addEventListener('mousemove', e=>{pointer.x=e.clientX; pointer.y=e.clientY; pointer.down=true;});
-window.addEventListener('mouseup', ()=>pointer.down=false);
