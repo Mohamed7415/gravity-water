@@ -1,16 +1,16 @@
-// fluid.js - Realistic AR Water (Debug & Fixes V2)
+// fluid.js - Realistic AR Water (Performance & Visuals V4)
 
 const CONFIG = {
-    particleCount: 1500,
-    radius: 12,
-    physRadius: 10,
-    gravityScale: 0.15,
-    damping: 0.985,
-    stiffness: 0.04,
+    particleCount: 900,  // Reduced from 1500 for 60fps
+    radius: 18,          // Larger particles to maintain volume
+    physRadius: 15,      // Larger collision radius
+    gravityScale: 0.18,  // Slightly stronger gravity feel
+    damping: 0.96,       // More friction for stability
+    stiffness: 0.03,     // Softer fluid
     stiffnessNear: 0.1,
-    restDensity: 4.0,
-    interactionRadius: 80,
-    subSteps: 3
+    restDensity: 3.0,    // Lower density target
+    interactionRadius: 100,
+    subSteps: 2          // Reduced physics iterations for speed
 };
 
 let gl;
@@ -46,38 +46,35 @@ function log(msg) {
     const el = document.getElementById('debug-console');
     if(el) {
         el.innerHTML = `> ${msg}<br>` + el.innerHTML;
-        if(el.innerHTML.length > 2000) el.innerHTML = el.innerHTML.slice(0, 2000);
+        if(el.innerHTML.length > 500) el.innerHTML = el.innerHTML.slice(0, 500);
     }
 }
-
-function showError(msg) {
-    log("[ERROR] " + msg);
-    alert(msg);
-}
+function showError(msg) { log("[ERROR] " + msg); alert(msg); }
 
 // --- 1. WebGL Core ---
-
 function initWebGL() {
-    log("Initializing WebGL...");
+    log("Initializing WebGL (High Res)...");
     try {
         const canvas = document.getElementById('glcanvas');
-        gl = canvas.getContext('webgl', { alpha: false, depth: false }) || 
-             canvas.getContext('experimental-webgl');
+        gl = canvas.getContext('webgl', { alpha: false, depth: false }) || canvas.getContext('experimental-webgl');
+        if (!gl) throw new Error("WebGL fail");
+        
+        // High DPI Support
+        const dpr = window.devicePixelRatio || 1;
+        // Cap DPR at 2.0 to prevent overheating
+        const effectiveDPR = Math.min(dpr, 2.0);
+        
+        canvas.width = window.innerWidth * effectiveDPR;
+        canvas.height = window.innerHeight * effectiveDPR;
+        width = canvas.width;
+        height = canvas.height;
 
-        if (!gl) throw new Error("WebGL context creation failed");
+        if (!gl.getExtension('OES_texture_float')) log("WARN: No float textures");
 
-        // Extensions
-        if (!gl.getExtension('OES_texture_float')) log("WARN: OES_texture_float missing");
-
-        resize();
-        window.addEventListener('resize', resize);
-
-        // Compile
         programs.water = createProgram(gl, 'vs-quad', 'fs-water');
         programs.particles = createProgram(gl, 'vs-particles', 'fs-particles');
-        if (!programs.water || !programs.particles) throw new Error("Shader compile failed");
+        if (!programs.water || !programs.particles) throw new Error("Shader error");
 
-        // Buffers
         buffers.quad = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.quad);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
@@ -86,7 +83,6 @@ function initWebGL() {
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.particles);
         gl.bufferData(gl.ARRAY_BUFFER, CONFIG.particleCount * 8, gl.DYNAMIC_DRAW);
 
-        // Textures
         textures.bg = createDefaultTexture(gl);
         textures.camera = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, textures.camera);
@@ -95,7 +91,11 @@ function initWebGL() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
 
-        log("WebGL Init OK");
+        // Resize logic is now integrated into Init to handle DPR
+        // Water Mask FBO: 0.75 scale for sharpness/speed balance
+        framebuffers.water = createFramebuffer(Math.floor(width * 0.75), Math.floor(height * 0.75));
+
+        log("WebGL Ready. " + width + "x" + height);
         return true;
     } catch (e) {
         showError(e.message);
@@ -105,39 +105,16 @@ function initWebGL() {
 
 function createProgram(gl, vsId, fsId) {
     try {
-        const vsSrc = document.getElementById(vsId).textContent;
-        const fsSrc = document.getElementById(fsId).textContent;
-        
         const vs = gl.createShader(gl.VERTEX_SHADER);
-        gl.shaderSource(vs, vsSrc);
+        gl.shaderSource(vs, document.getElementById(vsId).textContent);
         gl.compileShader(vs);
-        if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(vs));
-        
         const fs = gl.createShader(gl.FRAGMENT_SHADER);
-        gl.shaderSource(fs, fsSrc);
+        gl.shaderSource(fs, document.getElementById(fsId).textContent);
         gl.compileShader(fs);
-        if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(fs));
-
         const prog = gl.createProgram();
-        gl.attachShader(prog, vs);
-        gl.attachShader(prog, fs);
-        gl.linkProgram(prog);
-        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-        
+        gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
         return prog;
-    } catch (e) {
-        showError("Shader Error: " + e.message);
-        return null;
-    }
-}
-
-function resize() {
-    if (!gl) return;
-    const canvas = document.getElementById('glcanvas');
-    width = canvas.width = window.innerWidth;
-    height = canvas.height = window.innerHeight;
-    gl.viewport(0, 0, width, height);
-    framebuffers.water = createFramebuffer(Math.floor(width * 0.5), Math.floor(height * 0.5));
+    } catch (e) { return null; }
 }
 
 function createFramebuffer(w, h) {
@@ -147,7 +124,6 @@ function createFramebuffer(w, h) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
@@ -159,13 +135,10 @@ function createDefaultTexture(gl) {
     canvas.width = 512; canvas.height = 512;
     const ctx = canvas.getContext('2d');
     const grd = ctx.createLinearGradient(0,0,0,512);
-    grd.addColorStop(0, '#1a1a1a');
-    grd.addColorStop(1, '#000000');
-    ctx.fillStyle = grd;
-    ctx.fillRect(0,0,512,512);
-    ctx.strokeStyle = '#333';
-    ctx.lineWidth = 2;
-    for(let i=0; i<512; i+=40) {
+    grd.addColorStop(0, '#111'); grd.addColorStop(1, '#000');
+    ctx.fillStyle = grd; ctx.fillRect(0,0,512,512);
+    ctx.strokeStyle = '#444'; ctx.lineWidth = 4;
+    for(let i=0; i<512; i+=64) {
         ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
     }
@@ -177,83 +150,71 @@ function createDefaultTexture(gl) {
     return tex;
 }
 
-// --- 2. Camera ---
+// --- Camera ---
 async function toggleCamera() {
-    log("Toggling Camera...");
     const btn = document.getElementById('btn-cam');
-    
     if (isCameraActive) {
-        if (videoElement.srcObject) {
-            videoElement.srcObject.getTracks().forEach(t => t.stop());
-        }
-        videoElement.srcObject = null;
-        isCameraActive = false;
-        cameraReady = false;
-        btn.innerText = "Camera: OFF";
-        btn.classList.remove('active');
-        log("Camera Stopped");
+        if(videoElement.srcObject) videoElement.srcObject.getTracks().forEach(t=>t.stop());
+        videoElement.srcObject=null; isCameraActive=false; cameraReady=false;
+        btn.innerText = "Camera: OFF"; btn.classList.remove('active');
     } else {
         try {
-            log("Requesting Camera Stream...");
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment' } 
-            });
-            videoElement.srcObject = stream;
-            videoElement.play();
-            isCameraActive = true;
-            btn.innerText = "Camera: ON";
-            btn.classList.add('active');
-            
-            videoElement.onplaying = () => { 
-                cameraReady = true; 
-                log("Camera Ready & Playing");
-            };
-        } catch (e) {
-            showError("Camera Access Denied: " + e.message);
-        }
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            videoElement.srcObject = stream; videoElement.play();
+            isCameraActive=true; btn.innerText="Camera: ON"; btn.classList.add('active');
+            videoElement.onplaying = () => cameraReady = true;
+        } catch (e) { alert("Camera Fail: "+e.message); }
     }
 }
 
-// --- 3. Physics & Render (Same as before, abridged for length) ---
-// Note: Physics code is identical to previous successful version.
+// --- Physics (Optimized) ---
 function initParticles() {
     const cols = Math.floor(Math.sqrt(CONFIG.particleCount));
     const spacing = CONFIG.physRadius * 2.2;
-    const startX = (width - cols * spacing) / 2;
+    const startX = (width/window.devicePixelRatio - cols * spacing) / 2; // Adjust for DPR
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.x[i] = startX + (i%cols)*spacing;
-        particles.y[i] = height*0.3 + Math.floor(i/cols)*spacing;
-        particles.prevX[i] = particles.x[i];
-        particles.prevY[i] = particles.y[i];
-        particles.vx[i] = (Math.random()-0.5)*5;
-        particles.vy[i] = (Math.random()-0.5)*5;
+        particles.y[i] = height*0.1 + Math.floor(i/cols)*spacing;
+        particles.prevX[i] = particles.x[i]; particles.prevY[i] = particles.y[i];
+        particles.vx[i]=0; particles.vy[i]=0;
     }
 }
 
 function updatePhysics() {
-    // Gravity
+    // 1. Gravity & Inputs
+    // Note: Physics runs in Logic coordinates (Screen Pixels), WebGL handles scaling
+    // We need to scale pointer/gravity to match canvas size
+    const dpr = width / window.innerWidth;
+
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.vx[i] += gravity.x * CONFIG.gravityScale;
         particles.vy[i] += gravity.y * CONFIG.gravityScale;
         
         if(pointer.down) {
-            let dx = particles.x[i]-pointer.x;
-            let dy = particles.y[i]-pointer.y;
+            let dx = particles.x[i] - pointer.x * dpr;
+            let dy = particles.y[i] - pointer.y * dpr;
             let d2 = dx*dx+dy*dy;
-            if(d2 < CONFIG.interactionRadius**2){
+            let iR = CONFIG.interactionRadius * dpr;
+            if(d2 < iR*iR){
                 let d = Math.sqrt(d2);
-                let f = (1 - d/CONFIG.interactionRadius)*4.0;
+                let f = (1 - d/iR)*4.0;
                 particles.vx[i] += (dx/d)*f;
                 particles.vy[i] += (dy/d)*f;
             }
         }
-        
-        particles.prevX[i] = particles.x[i];
-        particles.prevY[i] = particles.y[i];
-        particles.x[i] += particles.vx[i];
-        particles.y[i] += particles.vy[i];
+        particles.prevX[i] = particles.x[i]; particles.prevY[i] = particles.y[i];
+        particles.x[i] += particles.vx[i]; particles.y[i] += particles.vy[i];
     }
-    // Constraints (PBF) - Keeping simplified for stability
+
+    // 2. PBF Solver (Optimized)
+    const gridSize = CONFIG.physRadius * 2 * dpr; // Scale grid by DPR? No, keep physics relative to particle size
+    // Actually simpler: Treat physics world as 1:1 with canvas pixels
+    // So CONFIG.radius is in canvas pixels.
+    
+    // We just need to make sure boundaries are correct
+    const boundW = width; 
+    const boundH = height;
+    
     for(let s=0; s<CONFIG.subSteps; s++){
         grid = {};
         for(let i=0; i<CONFIG.particleCount; i++){
@@ -290,17 +251,19 @@ function updatePhysics() {
         const m = CONFIG.radius;
         for(let i=0; i<CONFIG.particleCount; i++){
             if(particles.x[i]<m) particles.x[i]=m;
-            if(particles.x[i]>width-m) particles.x[i]=width-m;
+            if(particles.x[i]>boundW-m) particles.x[i]=boundW-m;
             if(particles.y[i]<m) particles.y[i]=m;
-            if(particles.y[i]>height-m) particles.y[i]=height-m;
+            if(particles.y[i]>boundH-m) particles.y[i]=boundH-m;
         }
     }
+
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.vx[i] = (particles.x[i]-particles.prevX[i])*CONFIG.damping;
         particles.vy[i] = (particles.y[i]-particles.prevY[i])*CONFIG.damping;
     }
 }
 
+// --- Render ---
 function render() {
     if(!isRunning) return;
     updatePhysics();
@@ -318,7 +281,7 @@ function render() {
     gl.enableVertexAttribArray(gl.getAttribLocation(programs.particles, 'a_position'));
     gl.vertexAttribPointer(gl.getAttribLocation(programs.particles, 'a_position'), 2, gl.FLOAT, false, 0, 0);
     gl.uniform2f(gl.getUniformLocation(programs.particles, 'u_resolution'), framebuffers.water.width, framebuffers.water.height);
-    gl.uniform1f(gl.getUniformLocation(programs.particles, 'u_pointSize'), CONFIG.radius * 3.0);
+    gl.uniform1f(gl.getUniformLocation(programs.particles, 'u_pointSize'), CONFIG.radius * 3.0); // Visual size
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.drawArrays(gl.POINTS, 0, CONFIG.particleCount);
 
@@ -348,15 +311,11 @@ function render() {
     requestAnimationFrame(render);
 }
 
-// --- 5. Boot / Interaction ---
-
+// --- Boot ---
 function startGame(e) {
-    if (e && e.preventDefault) e.preventDefault(); // Stop double-firing
+    if (e && e.preventDefault) e.preventDefault();
     if (isRunning) return;
-
-    log("Start button pressed");
     
-    // Hide UI immediately
     document.getElementById('ui-layer').classList.add('hidden');
     document.getElementById('controls').classList.remove('hidden');
 
@@ -364,51 +323,29 @@ function startGame(e) {
         initParticles();
         isRunning = true;
         render();
-        log("Rendering started");
-
-        // Request Sensors
+        
         if(typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
-            log("Requesting iOS Sensor Permission...");
             DeviceMotionEvent.requestPermission()
-                .then(r => {
-                    log("Sensor Permission: " + r);
-                    if (r === 'granted') window.addEventListener('devicemotion', handleMotion);
-                })
-                .catch(err => {
-                    log("Sensor Error: " + err.message);
-                });
+                .then(r => { if (r === 'granted') window.addEventListener('devicemotion', handleMotion); })
+                .catch(err => log("Sensors: " + err));
         } else {
-            log("Sensors: Standard API");
             window.addEventListener('devicemotion', handleMotion);
         }
     }
 }
 
 window.addEventListener('load', () => {
-    log("App Loaded. Waiting for user... (V3)");
-    
     videoElement = document.getElementById('cam-video');
     const startBtn = document.getElementById('start-btn');
-    const camBtn = document.getElementById('btn-cam');
-    const resetBtn = document.getElementById('btn-reset');
-
-    // Dual binding for reliability
     if(startBtn) {
         startBtn.addEventListener('touchend', startGame);
         startBtn.addEventListener('click', startGame);
     }
-    
-    // FALLBACK: Click ANYWHERE to start (if not started yet)
-    // This fixes issues where the button might be unclickable
     document.body.addEventListener('click', (e) => {
-        if (!isRunning && e.target.id !== 'debug-console') {
-            log("Global click detected");
-            startGame(e);
-        }
+        if (!isRunning && e.target.id !== 'debug-console') startGame(e);
     });
-
-    if(camBtn) camBtn.addEventListener('click', toggleCamera);
-    if(resetBtn) resetBtn.addEventListener('click', initParticles);
+    document.getElementById('btn-cam').addEventListener('click', toggleCamera);
+    document.getElementById('btn-reset').addEventListener('click', initParticles);
     
     window.addEventListener('touchmove', e=>{e.preventDefault(); pointer.x=e.touches[0].clientX; pointer.y=e.touches[0].clientY; pointer.down=true;}, {passive:false});
     window.addEventListener('touchend', ()=>pointer.down=false);
@@ -418,8 +355,5 @@ window.addEventListener('load', () => {
 
 function handleMotion(e) {
     let acc = e.accelerationIncludingGravity;
-    if (acc) {
-        gravity.x = -(acc.x||0) * 0.5;
-        gravity.y = (acc.y||0) * 0.5;
-    }
+    if (acc) { gravity.x = -(acc.x||0) * 0.5; gravity.y = (acc.y||0) * 0.5; }
 }
