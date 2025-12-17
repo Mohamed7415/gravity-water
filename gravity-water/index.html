@@ -3,179 +3,200 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Real Gravity Water</title>
+    <title>Real AR Water</title>
     <style>
         body, html {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
-            background-color: #1a1a1a; /* Dark sleek background */
+            background-color: #000;
             overflow: hidden;
             touch-action: none;
-            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            font-family: 'Segoe UI', sans-serif;
         }
-        canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-        }
+        canvas { display: block; width: 100%; height: 100%; }
+        
         #ui-layer {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            top: 0; left: 0; width: 100%; height: 100%;
             pointer-events: none;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
+            z-index: 20;
+            background: rgba(0,0,0,0.8);
+            transition: opacity 0.5s;
+        }
+        
+        /* Controls UI */
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            pointer-events: auto;
             z-index: 10;
         }
-        #start-btn {
-            pointer-events: auto;
-            padding: 15px 40px;
-            font-size: 18px;
-            color: #4facfe;
-            background: rgba(0, 0, 0, 0.8);
-            border: 1px solid #4facfe;
-            border-radius: 50px;
+
+        .btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            color: white;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 30px;
+            backdrop-filter: blur(10px);
             cursor: pointer;
             text-transform: uppercase;
-            letter-spacing: 2px;
-            transition: all 0.3s ease;
-            backdrop-filter: blur(5px);
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
         }
-        #start-btn:active {
-            transform: scale(0.95);
+        .btn.active {
             background: #4facfe;
-            color: white;
+            border-color: #4facfe;
+            color: #000;
         }
-        .hidden {
-            opacity: 0;
-            pointer-events: none !important;
+
+        #start-btn {
+            padding: 20px 50px;
+            font-size: 24px;
+            border: 2px solid #4facfe;
+            color: #4facfe;
+            background: transparent;
+            border-radius: 50px;
+            cursor: pointer;
         }
-        #stats {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: rgba(255,255,255,0.3);
-            font-size: 10px;
-            pointer-events: none;
-        }
+
+        video { display: none; } /* Hidden video element for texture capture */
+        
+        .hidden { opacity: 0; pointer-events: none !important; }
     </style>
 </head>
 <body>
     <canvas id="glcanvas"></canvas>
-    
-    <div id="ui-layer">
-        <button id="start-btn">Initialize Fluid Engine</button>
-    </div>
-    <div id="stats"></div>
+    <video id="cam-video" autoplay playsinline muted></video>
 
-    <!-- VERTEX SHADER: Standard full-screen quad -->
+    <div id="ui-layer">
+        <button id="start-btn" class="btn">START EXPERIENCE</button>
+        <p style="color:#888; margin-top:10px; font-size:12px">Requires Camera & Motion Sensors</p>
+    </div>
+
+    <div id="controls" class="hidden">
+        <button id="btn-cam" class="btn">Camera: OFF</button>
+        <button id="btn-reset" class="btn">Reset</button>
+    </div>
+
+    <!-- SHADERS -->
     <script id="vs-quad" type="x-shader/x-vertex">
         attribute vec2 a_position;
         varying vec2 v_uv;
         void main() {
             v_uv = a_position * 0.5 + 0.5;
-            // Flip Y for WebGL texture coords if needed, but usually 0,0 is bottom-left
             gl_Position = vec4(a_position, 0.0, 1.0);
         }
     </script>
 
-    <!-- FRAGMENT SHADER: Water Rendering (Metaballs + Lighting) -->
     <script id="fs-water" type="x-shader/x-fragment">
         precision mediump float;
-        uniform sampler2D u_texture;
+        uniform sampler2D u_particles; // The Metaballs (Alpha)
+        uniform sampler2D u_bg;        // The Background (Camera or Image)
         uniform vec2 u_resolution;
         varying vec2 v_uv;
 
         void main() {
-            // Sample the blurred particle field
-            vec4 color = texture2D(u_texture, v_uv);
-            float alpha = color.a;
+            vec2 pixel = 1.0 / u_resolution;
+            
+            // 1. Get Water Depth/Mask
+            float alpha = texture2D(u_particles, v_uv).a;
+            
+            // Cutoff for sharp surface
+            float threshold = 0.45;
+            
+            // Background is always drawn, but distorted
+            vec4 bgCol = texture2D(u_bg, v_uv); // Default background
 
-            // Thresholding: Cutoff soft edges to make sharp liquid surface
-            float threshold = 0.5;
             if (alpha < threshold) {
-                discard; // Transparent pixel
+                // No water here, just draw background
+                gl_FragColor = bgCol;
+                return;
             }
 
-            // Calculate Normal based on Alpha Gradient (fake 3D)
-            vec2 pixel = 1.0 / u_resolution;
-            float a_right = texture2D(u_texture, v_uv + vec2(pixel.x, 0.0)).a;
-            float a_up    = texture2D(u_texture, v_uv + vec2(0.0, pixel.y)).a;
+            // 2. Calculate Normal (Surface Slope)
+            // Smooth normal for better refraction
+            float a_r = texture2D(u_particles, v_uv + vec2(pixel.x, 0.0)).a;
+            float a_u = texture2D(u_particles, v_uv + vec2(0.0, pixel.y)).a;
             
             vec3 normal = normalize(vec3(
-                (threshold - a_right) * 2.0, // X slope
-                (threshold - a_up) * 2.0,    // Y slope
-                0.5                          // Z (up)
+                (threshold - a_r) * 3.0,
+                (threshold - a_u) * 3.0,
+                0.2 // Lower Z = steeper waves
             ));
 
-            // Lighting
-            vec3 lightDir = normalize(vec3(0.5, 1.0, 1.0)); // Light coming from top-right-front
+            // 3. Realistic Refraction (Distortion)
+            // Offset UV based on normal XY
+            vec2 refractUV = v_uv + normal.xy * 0.08; // 0.08 strength
             
-            // Diffuse (Blue water color)
-            float diff = max(dot(normal, lightDir), 0.0);
-            vec3 fluidColor = vec3(0.0, 0.6, 1.0); // Deep Sky Blue
-            vec3 diffuse = fluidColor * (0.6 + 0.4 * diff);
+            // Chromatic Aberration (Split RGB slightly for realism)
+            float r = texture2D(u_bg, refractUV + vec2(0.002, 0.0)).r;
+            float g = texture2D(u_bg, refractUV).g;
+            float b = texture2D(u_bg, refractUV - vec2(0.002, 0.0)).b;
+            vec3 refractedColor = vec3(r, g, b);
 
-            // Specular (Shiny highlights)
+            // 4. Lighting (Specular + Fresnel)
+            vec3 lightDir = normalize(vec3(0.5, 1.0, 1.0));
             vec3 viewDir = vec3(0.0, 0.0, 1.0);
-            vec3 reflectDir = reflect(-lightDir, normal);
-            float spec = pow(max(dot(viewDir, reflectDir), 0.0), 64.0);
-            vec3 specular = vec3(1.0) * spec;
-
-            // Rim light (Fresnel-ish) - makes edges glow slightly
-            float rim = 1.0 - max(dot(viewDir, normal), 0.0);
-            rim = pow(rim, 3.0);
             
-            // Combine
-            vec3 finalColor = diffuse + specular + (vec3(0.4, 0.8, 1.0) * rim * 0.5);
+            // Specular Highlight (The Sun/Light source reflection)
+            vec3 halfDir = normalize(lightDir + viewDir);
+            float specAngle = max(dot(normal, halfDir), 0.0);
+            float specular = pow(specAngle, 80.0); // Sharp highlight
 
-            gl_FragColor = vec4(finalColor, 0.9); // 0.9 alpha for slight transparency look
+            // Fresnel (Edges are more reflective/white)
+            float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), 3.0);
+            
+            // 5. Compose
+            // Water isn't blue, it filters light. But we add a TINY tint.
+            // Mix Refracted Background + Highlights
+            
+            vec3 finalColor = refractedColor;
+            
+            // Add subtle darkening for "volume" (Beer's law fake)
+            finalColor *= 0.95; 
+
+            // Add Highlights
+            finalColor += vec3(1.0) * specular * 0.9;
+            finalColor += vec3(1.0) * fresnel * 0.4;
+
+            gl_FragColor = vec4(finalColor, 1.0);
         }
     </script>
 
-    <!-- VERTEX SHADER: Particles -->
     <script id="vs-particles" type="x-shader/x-vertex">
         attribute vec2 a_position;
-        attribute float a_velocity; // Speed for color variation?
         uniform vec2 u_resolution;
         uniform float u_pointSize;
-
-        varying float v_speed;
-
         void main() {
-            // Convert pixels to clip space -1..1
             vec2 clipSpace = (a_position / u_resolution) * 2.0 - 1.0;
-            // Flip Y because WebGL 0 is bottom
-            clipSpace.y *= -1.0; 
-            
+            clipSpace.y *= -1.0;
             gl_Position = vec4(clipSpace, 0.0, 1.0);
-            gl_PointSize = u_pointSize; 
-            v_speed = a_velocity;
+            gl_PointSize = u_pointSize;
         }
     </script>
 
-    <!-- FRAGMENT SHADER: Particles (Soft Circles) -->
     <script id="fs-particles" type="x-shader/x-fragment">
         precision mediump float;
-
         void main() {
-            // Draw a soft circle
             vec2 coord = gl_PointCoord * 2.0 - 1.0;
             float dist = dot(coord, coord);
-            
             if (dist > 1.0) discard;
-
-            // Soft falloff for metaball blending
             float alpha = (1.0 - dist);
-            alpha = pow(alpha, 2.0); // Make it sharper or softer
-            
-            gl_FragColor = vec4(0.0, 0.5, 1.0, alpha); 
+            alpha = pow(alpha, 2.0);
+            gl_FragColor = vec4(0.0, 0.0, 1.0, alpha); // Blue channel irrelevant, we use Alpha
         }
     </script>
 
