@@ -92,10 +92,15 @@
     <div id="controls" class="hidden">
         <button id="btn-cam" class="btn">Camera: OFF</button>
         <button id="btn-reset" class="btn">Reset</button>
+        <!-- New Sliders -->
+        <div style="display:flex; flex-direction:column; gap:10px; margin-left:15px;">
+            <label style="color:white; font-size:12px;">Thickness: <input type="range" id="val-thickness" min="0" max="0.3" step="0.01" value="0.15"></label>
+            <label style="color:white; font-size:12px;">Density: <input type="range" id="val-density" min="0" max="3.0" step="0.1" value="1.5"></label>
+        </div>
     </div>
 
     <!-- Debug Log for Mobile -->
-    <div id="debug-console" style="position:absolute; top:0; left:0; width:100%; height:150px; pointer-events:none; z-index:9999; color:#0f0; font-size:10px; font-family:monospace; padding:5px; overflow:hidden; text-shadow: 1px 1px 0 #000;"></div>
+    <div id="debug-console" style="position:absolute; top:0; left:0; width:100%; height:50px; pointer-events:none; z-index:9999; color:#0f0; font-size:10px; font-family:monospace; padding:5px; overflow:hidden; opacity:0.5;"></div>
 
     <!-- SHADERS -->
     <script id="vs-quad" type="x-shader/x-vertex">
@@ -112,62 +117,73 @@
         uniform sampler2D u_particles; 
         uniform sampler2D u_bg;        
         uniform vec2 u_resolution;
+        
+        // Dynamic Parameters
+        uniform float u_refractionStr; // Thickness
+        uniform float u_density;       // Color Absorption
+        
         varying vec2 v_uv;
 
         void main() {
             vec2 pixel = 1.0 / u_resolution;
             float alpha = texture2D(u_particles, v_uv).a;
             
-            // Sharpen edge: Higher threshold, smaller transition
-            // 0.6 means "fatter" particles, 0.01 means sharp edge
-            float threshold = 0.6;
+            // Smoother threshold for "meniscus" effect
+            // Instead of hard cut at 0.6, we smooth between 0.5 and 0.65
+            float surface = smoothstep(0.4, 0.65, alpha);
             
-            vec4 bgCol = texture2D(u_bg, v_uv);
-
-            if (alpha < threshold - 0.01) {
-                gl_FragColor = bgCol;
+            if (surface < 0.01) {
+                gl_FragColor = texture2D(u_bg, v_uv);
                 return;
             }
 
             // High Quality Normals
-            float a_r = texture2D(u_particles, v_uv + vec2(pixel.x*2.0, 0.0)).a;
-            float a_u = texture2D(u_particles, v_uv + vec2(0.0, pixel.y*2.0)).a;
+            // Using a wider sample radius for "thicker" feeling normals
+            float a_r = texture2D(u_particles, v_uv + vec2(pixel.x*3.0, 0.0)).a;
+            float a_u = texture2D(u_particles, v_uv + vec2(0.0, pixel.y*3.0)).a;
             
             vec3 normal = normalize(vec3(
-                (threshold - a_r) * 10.0, // Stronger normals = more refraction
-                (threshold - a_u) * 10.0,
-                0.5 // Lower Z = steeper waves
+                (alpha - a_r) * 8.0, 
+                (alpha - a_u) * 8.0,
+                0.3 // Z scale determines flatness. Lower = more bumpy.
             ));
 
-            // Refraction
-            vec2 refractUV = v_uv + normal.xy * 0.05; 
+            // Volumetric Refraction
+            // The deeper the water (higher alpha), the more it refracts
+            vec2 refractUV = v_uv + normal.xy * u_refractionStr * alpha; 
             
-            // Chromatic Aberration (RGB Split)
-            float r = texture2D(u_bg, refractUV + vec2(0.003, 0.0)).r;
+            // Chromatic Aberration (Thick glass effect)
+            float shift = 0.005 * u_refractionStr * 10.0;
+            float r = texture2D(u_bg, refractUV + vec2(shift, 0.0)).r;
             float g = texture2D(u_bg, refractUV).g;
-            float b = texture2D(u_bg, refractUV - vec2(0.003, 0.0)).b;
-            vec3 refractedColor = vec3(r, g, b);
+            float b = texture2D(u_bg, refractUV - vec2(shift, 0.0)).b;
+            vec3 bgCol = vec3(r, g, b);
 
             // Lighting
             vec3 lightDir = normalize(vec3(0.2, 0.5, 1.0));
             vec3 viewDir = vec3(0.0, 0.0, 1.0);
             
-            // Sharp Specular (Wet look)
+            // Specular
             vec3 halfDir = normalize(lightDir + viewDir);
-            float spec = pow(max(dot(normal, halfDir), 0.0), 200.0); // Ultra sharp highlight
+            float spec = pow(max(dot(normal, halfDir), 0.0), 100.0);
 
-            // Fresnel
-            float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), 2.0);
+            // Fresnel (Edge reflection)
+            float fresnel = pow(1.0 - max(dot(viewDir, normal), 0.0), 3.0);
             
-            // Volume darkening (thicker water is darker)
-            float depth = clamp((alpha - threshold) * 2.0, 0.0, 1.0);
-            vec3 waterCol = refractedColor * (1.0 - depth * 0.3); // Darken deep parts
+            // Beer's Law (Volume Absorption)
+            // Light gets absorbed as it travels through the "thickness" (simulated by alpha)
+            // We absorb Red and Green more than Blue to get water color.
+            vec3 absorptionColor = vec3(0.9, 0.6, 0.2); // Absorb Red/Green heavily
+            vec3 transmission = exp(-absorptionColor * alpha * u_density);
             
-            // Add Blue Tint slightly
-            waterCol = mix(waterCol, vec3(0.0, 0.5, 1.0), 0.1 * depth);
+            // Compose
+            vec3 finalColor = bgCol * transmission; 
+            
+            // Add reflections on top
+            finalColor += vec3(1.0) * spec;
+            finalColor += vec3(0.8, 0.9, 1.0) * fresnel * 0.5;
 
-            vec3 finalColor = waterCol + vec3(1.0)*spec + vec3(0.8)*fresnel*0.3;
-
+            // Soft edges mixing
             gl_FragColor = vec4(finalColor, 1.0);
         }
     </script>

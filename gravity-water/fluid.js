@@ -1,16 +1,16 @@
-// fluid.js - Realistic AR Water (Performance & Visuals V4)
+// fluid.js - Realistic AR Water V5 (Volumetric Thickness)
 
 const CONFIG = {
-    particleCount: 900,  // Reduced from 1500 for 60fps
-    radius: 18,          // Larger particles to maintain volume
-    physRadius: 15,      // Larger collision radius
-    gravityScale: 0.18,  // Slightly stronger gravity feel
-    damping: 0.96,       // More friction for stability
-    stiffness: 0.03,     // Softer fluid
+    particleCount: 900,
+    radius: 20,          // Even fatter particles for volumetric look
+    physRadius: 15,
+    gravityScale: 0.18,
+    damping: 0.96,
+    stiffness: 0.02,     // Softer = more stacking = more thickness
     stiffnessNear: 0.1,
-    restDensity: 3.0,    // Lower density target
-    interactionRadius: 100,
-    subSteps: 2          // Reduced physics iterations for speed
+    restDensity: 3.0,
+    interactionRadius: 120, // Interaction radius
+    subSteps: 2
 };
 
 let gl;
@@ -53,7 +53,7 @@ function showError(msg) { log("[ERROR] " + msg); alert(msg); }
 
 // --- 1. WebGL Core ---
 function initWebGL() {
-    log("Initializing WebGL (High Res)...");
+    log("Init WebGL V5...");
     try {
         const canvas = document.getElementById('glcanvas');
         gl = canvas.getContext('webgl', { alpha: false, depth: false }) || canvas.getContext('experimental-webgl');
@@ -61,7 +61,6 @@ function initWebGL() {
         
         // High DPI Support
         const dpr = window.devicePixelRatio || 1;
-        // Cap DPR at 2.0 to prevent overheating
         const effectiveDPR = Math.min(dpr, 2.0);
         
         canvas.width = window.innerWidth * effectiveDPR;
@@ -91,11 +90,9 @@ function initWebGL() {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
 
-        // Resize logic is now integrated into Init to handle DPR
-        // Water Mask FBO: 0.75 scale for sharpness/speed balance
-        framebuffers.water = createFramebuffer(Math.floor(width * 0.75), Math.floor(height * 0.75));
+        // Water Mask FBO: 0.8 scale for better volume
+        framebuffers.water = createFramebuffer(Math.floor(width * 0.8), Math.floor(height * 0.8));
 
-        log("WebGL Ready. " + width + "x" + height);
         return true;
     } catch (e) {
         showError(e.message);
@@ -135,18 +132,21 @@ function createDefaultTexture(gl) {
     canvas.width = 512; canvas.height = 512;
     const ctx = canvas.getContext('2d');
     const grd = ctx.createLinearGradient(0,0,0,512);
-    grd.addColorStop(0, '#111'); grd.addColorStop(1, '#000');
+    grd.addColorStop(0, '#222'); grd.addColorStop(1, '#000');
     ctx.fillStyle = grd; ctx.fillRect(0,0,512,512);
-    ctx.strokeStyle = '#444'; ctx.lineWidth = 4;
-    for(let i=0; i<512; i+=64) {
-        ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(512, i); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke();
+    
+    // Colorful dots for refraction test
+    for(let i=0; i<100; i++) {
+        ctx.fillStyle = `hsl(${Math.random()*360}, 80%, 60%)`;
+        ctx.beginPath();
+        ctx.arc(Math.random()*512, Math.random()*512, Math.random()*5+2, 0, Math.PI*2);
+        ctx.fill();
     }
+    
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.generateMipmap(gl.TEXTURE_2D);
     return tex;
 }
 
@@ -171,7 +171,7 @@ async function toggleCamera() {
 function initParticles() {
     const cols = Math.floor(Math.sqrt(CONFIG.particleCount));
     const spacing = CONFIG.physRadius * 2.2;
-    const startX = (width/window.devicePixelRatio - cols * spacing) / 2; // Adjust for DPR
+    const startX = (width/window.devicePixelRatio - cols * spacing) / 2; 
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.x[i] = startX + (i%cols)*spacing;
         particles.y[i] = height*0.1 + Math.floor(i/cols)*spacing;
@@ -181,11 +181,7 @@ function initParticles() {
 }
 
 function updatePhysics() {
-    // 1. Gravity & Inputs
-    // Note: Physics runs in Logic coordinates (Screen Pixels), WebGL handles scaling
-    // We need to scale pointer/gravity to match canvas size
     const dpr = width / window.innerWidth;
-
     for(let i=0; i<CONFIG.particleCount; i++){
         particles.vx[i] += gravity.x * CONFIG.gravityScale;
         particles.vy[i] += gravity.y * CONFIG.gravityScale;
@@ -206,12 +202,6 @@ function updatePhysics() {
         particles.x[i] += particles.vx[i]; particles.y[i] += particles.vy[i];
     }
 
-    // 2. PBF Solver (Optimized)
-    const gridSize = CONFIG.physRadius * 2 * dpr; // Scale grid by DPR? No, keep physics relative to particle size
-    // Actually simpler: Treat physics world as 1:1 with canvas pixels
-    // So CONFIG.radius is in canvas pixels.
-    
-    // We just need to make sure boundaries are correct
     const boundW = width; 
     const boundH = height;
     
@@ -281,13 +271,17 @@ function render() {
     gl.enableVertexAttribArray(gl.getAttribLocation(programs.particles, 'a_position'));
     gl.vertexAttribPointer(gl.getAttribLocation(programs.particles, 'a_position'), 2, gl.FLOAT, false, 0, 0);
     gl.uniform2f(gl.getUniformLocation(programs.particles, 'u_resolution'), framebuffers.water.width, framebuffers.water.height);
-    gl.uniform1f(gl.getUniformLocation(programs.particles, 'u_pointSize'), CONFIG.radius * 3.0); // Visual size
+    gl.uniform1f(gl.getUniformLocation(programs.particles, 'u_pointSize'), CONFIG.radius * 3.0); 
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.drawArrays(gl.POINTS, 0, CONFIG.particleCount);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
     gl.useProgram(programs.water);
+
+    // Get Slider Values
+    const thickVal = document.getElementById('val-thickness').value;
+    const densVal = document.getElementById('val-density').value;
 
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, framebuffers.water.tex);
     gl.uniform1i(gl.getUniformLocation(programs.water, 'u_particles'), 0);
@@ -302,6 +296,10 @@ function render() {
     gl.uniform1i(gl.getUniformLocation(programs.water, 'u_bg'), 1);
     gl.uniform2f(gl.getUniformLocation(programs.water, 'u_resolution'), width, height);
     
+    // Pass Uniforms
+    gl.uniform1f(gl.getUniformLocation(programs.water, 'u_refractionStr'), parseFloat(thickVal));
+    gl.uniform1f(gl.getUniformLocation(programs.water, 'u_density'), parseFloat(densVal));
+
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.quad);
     gl.enableVertexAttribArray(gl.getAttribLocation(programs.water, 'a_position'));
     gl.vertexAttribPointer(gl.getAttribLocation(programs.water, 'a_position'), 2, gl.FLOAT, false, 0, 0);
@@ -342,7 +340,8 @@ window.addEventListener('load', () => {
         startBtn.addEventListener('click', startGame);
     }
     document.body.addEventListener('click', (e) => {
-        if (!isRunning && e.target.id !== 'debug-console') startGame(e);
+        // Only trigger global start if not clicking UI controls
+        if (!isRunning && e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON') startGame(e);
     });
     document.getElementById('btn-cam').addEventListener('click', toggleCamera);
     document.getElementById('btn-reset').addEventListener('click', initParticles);
