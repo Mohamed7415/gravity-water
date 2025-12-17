@@ -385,7 +385,7 @@ function startGame(e) {
 }
 
 window.addEventListener('load', () => {
-    log("App Loaded. Waiting for user...");
+    log("App Loaded. Waiting for user... (V3)");
     
     videoElement = document.getElementById('cam-video');
     const startBtn = document.getElementById('start-btn');
@@ -398,6 +398,15 @@ window.addEventListener('load', () => {
         startBtn.addEventListener('click', startGame);
     }
     
+    // FALLBACK: Click ANYWHERE to start (if not started yet)
+    // This fixes issues where the button might be unclickable
+    document.body.addEventListener('click', (e) => {
+        if (!isRunning && e.target.id !== 'debug-console') {
+            log("Global click detected");
+            startGame(e);
+        }
+    });
+
     if(camBtn) camBtn.addEventListener('click', toggleCamera);
     if(resetBtn) resetBtn.addEventListener('click', initParticles);
     

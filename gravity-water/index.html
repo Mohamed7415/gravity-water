@@ -63,11 +63,14 @@
         }
 
         #start-btn {
+            position: relative; /* Ensure z-index works */
+            z-index: 100000;    /* Force on top of everything */
+            pointer-events: auto;
             padding: 20px 50px;
             font-size: 24px;
             border: 2px solid #4facfe;
             color: #4facfe;
-            background: transparent;
+            background: rgba(0,0,0,0.5); /* Make hit area clear */
             border-radius: 50px;
             cursor: pointer;
         }
